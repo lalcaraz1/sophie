@@ -6,8 +6,12 @@ const UA =
 /** Respuesta con la URL final ya resuelta tras seguir redirecciones. */
 export interface HttpResponse {
   status: number;
-  url: string; // URL final despues de redirects (equivalente a r.url de requests)
+  url: string; // URL final despues de redirects
+  headers: Headers; // headers de la respuesta final (Content-Type, Content-Disposition, ...)
   text: () => Promise<string>;
+  // Cuerpo crudo para descargas binarias (streaming a disco). text() y body
+  // consumen el mismo stream: usar uno u otro por respuesta, nunca ambos.
+  body: ReadableStream<Uint8Array> | null;
 }
 
 /**
@@ -115,7 +119,9 @@ export class Session {
       return {
         status: res.status,
         url: currentUrl,
+        headers: res.headers,
         text: () => res.text(),
+        body: res.body,
       };
     }
     throw new Error(`Demasiadas redirecciones: ${url}`);
