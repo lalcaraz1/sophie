@@ -27,6 +27,7 @@ export async function downloadFile(
   session: Session,
   url: string,
   destDir: string,
+  fallbackName = 'archivo',
 ): Promise<string | null> {
   let response;
   try {
@@ -44,7 +45,7 @@ export async function downloadFile(
     const link = $('.resourceworkaround a, .resourcecontent a, object[data], iframe[src]').first();
     const real = link.attr('href') ?? link.attr('data') ?? link.attr('src');
     if (real) {
-      return downloadFile(session, new URL(real, url).href, destDir);
+      return downloadFile(session, new URL(real, url).href, destDir, fallbackName);
     }
     return null; // era una pagina de verdad, no un archivo
   }
@@ -57,7 +58,7 @@ export async function downloadFile(
     fileName = decodeURIComponent(match[1]);
   }
   if (!fileName) {
-    fileName = basename(new URL(response.url).pathname) || 'archivo';
+    fileName = basename(new URL(response.url).pathname) || fallbackName;
   }
 
   fileName = sanitize(fixMojibake(fileName));
@@ -92,4 +93,23 @@ export async function downloadFile(
   }
   console.log(`    [archivo] ${basename(dest)}`);
   return dest;
+}
+
+/** Carpeta de Moodle (mod/folder): baja todos los pluginfile que contenga. */
+export async function handleFolder(
+  session: Session,
+  url: string,
+  filesDir: string,
+): Promise<string[]> {
+  const saved: string[] = [];
+  const response = await session.get(url);
+  const $ = cheerio.load(await response.text());
+  for (const element of $("a[href*='pluginfile.php']").toArray()) {
+    const href = $(element).attr('href');
+    if (href) {
+      const path = await downloadFile(session, new URL(href, url).href, filesDir);
+      if (path) saved.push(path);
+    }
+  }
+  return saved;
 }

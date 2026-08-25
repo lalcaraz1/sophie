@@ -18,7 +18,11 @@ function normalizeVideoUrl(u: string): string {
  * Saca los videos/recursos embebidos (iframes, <video>, links a youtube/vimeo/
  * drive) que la conversion a Markdown descarta. Devuelve URLs unicas, en orden.
  */
-function extractEmbeds($: cheerio.CheerioAPI, container: CheerioNode, base: string): string[] {
+export function extractEmbeds(
+  $: cheerio.CheerioAPI,
+  container: CheerioNode,
+  base: string,
+): string[] {
   const embeds: string[] = [];
   const selector =
     "iframe[src], video source[src], video[src], " +
