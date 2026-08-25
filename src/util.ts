@@ -1,3 +1,21 @@
+import TurndownService from 'turndown';
+
+const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+
+/** Convierte un fragmento de HTML a Markdown. */
+export function htmlToMd(html: string): string {
+  return turndown.turndown(html).trim();
+}
+
+/**
+ * Colapsa espacios en blanco (incluidos saltos de linea) a un solo espacio y
+ * recorta los extremos. cheerio no lo hace solo al leer .text(), a diferencia
+ * del get_text de otros parsers.
+ */
+export function cleanText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 /**
  * Convierte un texto en un nombre de archivo/carpeta valido en Windows:
  * reemplaza los caracteres prohibidos por "_", colapsa espacios y recorta.

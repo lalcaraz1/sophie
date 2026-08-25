@@ -1,15 +1,22 @@
-import { join } from 'node:path';
 import * as cheerio from 'cheerio';
 import { BASE_URL } from './config.js';
 import { Session } from './session.js';
 import { login } from './auth.js';
 import { loadCredentials } from './credentials.js';
 import { fetchEnrolledCourses } from './discovery.js';
-import { downloadFile, resetDownloadedThisRun } from './download.js';
+import { handleBook, handleForum, handlePage, handleUrl } from './handlers.js';
+
+function firstAbsoluteHref($: cheerio.CheerioAPI, selector: string): string | undefined {
+  const href = $(selector).first().attr('href');
+  return href ? new URL(href, BASE_URL).href : undefined;
+}
+
+function preview(label: string, markdown: string): void {
+  console.log(`\n===== ${label} =====`);
+  console.log(markdown ? markdown.slice(0, 600) : '(vacio)');
+}
 
 async function main(): Promise<void> {
-  resetDownloadedThisRun();
-
   const { user, password } = loadCredentials();
   console.log(`[i] Credenciales leidas del Credential Manager (usuario: ${user})`);
 
@@ -18,30 +25,35 @@ async function main(): Promise<void> {
 
   const courses = await fetchEnrolledCourses(session);
   console.log(`[i] materias descubiertas: ${courses.length}`);
-  if (courses.length === 0) {
-    console.log('[!] Sin materias para probar la descarga.');
-    return;
-  }
 
-  // Smoke test Fase 2: recorre las materias hasta encontrar un recurso
-  // descargable y lo baja. Codigo temporal; en la Fase 5 index.ts pasa a main real.
+  // Smoke test Fase 3: junta la primera pagina, foro y libro que aparezcan en
+  // las portadas de las materias y muestra el Markdown de cada handler.
+  // Codigo temporal; en la Fase 5 index.ts pasa a main real.
+  let pageUrl: string | undefined;
+  let forumUrl: string | undefined;
+  let bookUrl: string | undefined;
+  let urlUrl: string | undefined;
   for (const course of courses) {
     const coursePage = await session.get(new URL(`/course/view.php?id=${course.id}`, BASE_URL).href);
     const $ = cheerio.load(await coursePage.text());
-    const resourceHref = $("a[href*='mod/resource/view.php'], a[href*='pluginfile.php']")
-      .first()
-      .attr('href');
-    if (!resourceHref) {
-      console.log(`[test] ${course.name}: sin recursos, sigo con la proxima.`);
-      continue;
-    }
-    console.log(`[test] descargando un recurso de: ${course.name}`);
-    const destDir = join(process.cwd(), 'material', '_test');
-    const saved = await downloadFile(session, new URL(resourceHref, BASE_URL).href, destDir);
-    console.log(saved ? `[test] descargado en: ${saved}` : '[test] no se descargo nada.');
-    return;
+    pageUrl ??= firstAbsoluteHref($, "a[href*='mod/page/view.php']");
+    forumUrl ??= firstAbsoluteHref($, "a[href*='mod/forum/view.php']");
+    bookUrl ??= firstAbsoluteHref($, "a[href*='mod/book/view.php']");
+    urlUrl ??= firstAbsoluteHref($, "a[href*='mod/url/view.php']");
+    if (pageUrl && forumUrl && bookUrl && urlUrl) break;
   }
-  console.log('[!] Ninguna materia tenia recursos descargables en su portada.');
+
+  if (pageUrl) preview('PAGINA', await handlePage(session, pageUrl));
+  else console.log('[test] no encontre ninguna pagina (mod/page).');
+
+  if (forumUrl) preview('FORO', await handleForum(session, forumUrl));
+  else console.log('[test] no encontre ningun foro (mod/forum).');
+
+  if (bookUrl) preview('LIBRO', await handleBook(session, bookUrl));
+  else console.log('[test] no encontre ningun libro (mod/book).');
+
+  if (urlUrl) preview('URL', await handleUrl(session, urlUrl));
+  else console.log('[test] no encontre ningun recurso URL (mod/url).');
 }
 
 main().catch((e) => {
