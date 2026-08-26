@@ -98,16 +98,16 @@ async function processActivities(
       }
     } else if (type === 'forum') {
       console.log(`    [foro] ${name}`);
-      ctx.markdown.push(`\n### Foro: ${name}\n`);
+      ctx.markdown.push(`\n### Foro: [${name}](${href})\n`);
       const text = await handleForum(ctx.session, href);
       ctx.markdown.push(text.trim() ? text : '_(sin mensajes)_');
     } else if (type === 'page') {
       console.log(`    [pagina] ${name}`);
-      ctx.markdown.push(`\n### Página: ${name}\n`);
+      ctx.markdown.push(`\n### Página: [${name}](${href})\n`);
       ctx.markdown.push((await handlePage(ctx.session, href)) || '_(vacio)_');
     } else if (type === 'book') {
       console.log(`    [libro] ${name}`);
-      ctx.markdown.push(`\n### Libro: ${name}\n`);
+      ctx.markdown.push(`\n### Libro: [${name}](${href})\n`);
       ctx.markdown.push((await handleBook(ctx.session, href)) || '_(vacio)_');
     } else if (type === 'url') {
       const target = await handleUrl(ctx.session, href);
