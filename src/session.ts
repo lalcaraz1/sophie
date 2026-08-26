@@ -4,7 +4,7 @@ const UA =
   'Chrome/124.0 Safari/537.36';
 
 /** Respuesta con la URL final ya resuelta tras seguir redirecciones. */
-export interface HttpResponse {
+interface HttpResponse {
   status: number;
   url: string; // URL final despues de redirects
   headers: Headers; // headers de la respuesta final (Content-Type, Content-Disposition, ...)

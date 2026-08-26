@@ -1,6 +1,7 @@
-import { basename, relative } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { basename, join, relative } from 'node:path';
 import * as cheerio from 'cheerio';
-import { BASE_URL, FILE_HINT_EXT } from './config.js';
+import { BASE_URL, FILE_HINT_EXT, OUTPUT_DIR } from './config.js';
 import type { Session } from './session.js';
 import { cleanText, htmlToMd, sanitize } from './util.js';
 import { downloadFile, handleFolder } from './download.js';
@@ -13,7 +14,7 @@ type CheerioNode = ReturnType<cheerio.CheerioAPI>;
  * todas las secciones: `markdown` junta la salida, `seenHrefs` evita procesar el
  * mismo recurso dos veces, y `unhandled` registra los tipos sin handler dedicado.
  */
-export interface CourseContext {
+interface CourseContext {
   session: Session;
   courseDir: string;
   filesDir: string;
@@ -23,7 +24,7 @@ export interface CourseContext {
 }
 
 /** Extrae el tipo de modulo de una URL de Moodle: /mod/<tipo>/ -> "<tipo>". */
-export function moduleType(href: string): string | null {
+function moduleType(href: string): string | null {
   const match = href.match(/\/mod\/(\w+)\//);
   return match ? match[1] : null;
 }
@@ -37,7 +38,7 @@ function relativeToCourse(courseDir: string, path: string): string {
  * Procesa todas las actividades dentro de un contenedor (una seccion o el
  * region-main de una pestaña) y vuelca su resultado en `ctx.markdown`.
  */
-export async function processActivities(
+async function processActivities(
   ctx: CourseContext,
   $: cheerio.CheerioAPI,
   container: CheerioNode,
@@ -134,6 +135,165 @@ export async function processActivities(
       } catch {
         // Ignoramos: el escaneo de embeds es best-effort.
       }
+    }
+  }
+}
+
+/**
+ * Busca el nombre real de una seccion (numero secNum) en los links de pestaña de
+ * la pagina. Prefiere la pestaña marcada como activa. Ignora etiquetas de
+ * navegacion genericas ("Curso", "Más").
+ */
+function sectionNameFrom($: cheerio.CheerioAPI, secNum: string): string {
+  let best = '';
+  for (const element of $("a[href*='section=']").toArray()) {
+    const match = ($(element).attr('href') ?? '').match(/[?&]section=(\d+)/);
+    if (!match || match[1] !== secNum) continue;
+    const text = cleanText($(element).text());
+    if (!text || ['curso', 'más', 'more', 'general'].includes(text.toLowerCase())) continue;
+    const li = $(element).closest('li');
+    if (li.length && li.hasClass('active')) return text;
+    best = best || text;
+  }
+  return best;
+}
+
+/**
+ * Agrega a la cola las secciones (?section=N) enlazadas en el contenedor que
+ * todavia no vimos. Asi capturamos tambien subsecciones anidadas dentro de una
+ * pestaña, no solo la barra principal.
+ */
+function collectSections(
+  $: cheerio.CheerioAPI,
+  container: CheerioNode,
+  courseUrl: string,
+  queue: Array<{ name: string; url: string }>,
+  seenSections: Set<string>,
+): void {
+  for (const element of container.find("a[href*='section=']").toArray()) {
+    const href = $(element).attr('href') ?? '';
+    const match = href.match(/[?&]section=(\d+)/);
+    if (!match || seenSections.has(match[1])) continue;
+    seenSections.add(match[1]);
+    const name = cleanText($(element).text()) || `Sección ${match[1]}`;
+    queue.push({ name, url: new URL(href, courseUrl).href });
+  }
+}
+
+/**
+ * Procesa una materia entera: detecta el nombre, recorre sus secciones (con
+ * soporte para el formato con pestañas onetopic) y guarda el Markdown resultante
+ * en OUTPUT_DIR/<materia>/<materia>.md, con los archivos en su subcarpeta.
+ */
+export async function processCourse(session: Session, courseId: number): Promise<void> {
+  const url = new URL(`/course/view.php?id=${courseId}`, BASE_URL).href;
+  const response = await session.get(url);
+  const $ = cheerio.load(await response.text());
+
+  const titleElement = $('h1, .page-header-headings h1, title').first();
+  const courseName = titleElement.length
+    ? sanitize(cleanText(titleElement.text()))
+    : `curso_${courseId}`;
+  console.log(`\n=== Materia: ${courseName} (id=${courseId}) ===`);
+
+  const courseDir = join(OUTPUT_DIR, courseName);
+  const filesDir = join(courseDir, 'archivos');
+  await mkdir(courseDir, { recursive: true });
+
+  const ctx: CourseContext = {
+    session,
+    courseDir,
+    filesDir,
+    markdown: [`# ${courseName}\n`, `_Fuente: ${url}_\n`],
+    seenHrefs: new Set(),
+    unhandled: new Map(),
+  };
+
+  // ¿El curso usa formato con pestañas (onetopic)? En ese caso la pagina solo
+  // muestra la pestaña activa; el resto del material esta en otras "secciones"
+  // que se cargan con ?id=..&section=N.
+  const bodyClasses = $('body').attr('class') ?? '';
+  const tabbed = bodyClasses.includes('format-onetopic') || bodyClasses.includes('format-tabs');
+
+  const queue: Array<{ name: string; url: string }> = [];
+  const seenSections = new Set<string>();
+
+  if (tabbed) {
+    collectSections($, $('html'), url, queue, seenSections);
+    // Ademas de las secciones enlazadas, probamos todos los numeros de seccion
+    // (0..max+5) para no perder secciones "huerfanas" no enlazadas en ninguna
+    // pestaña visible (ej: subtemas de segundo nivel).
+    const nums = [...seenSections].map(Number);
+    const maxNum = nums.length ? Math.max(...nums) : 0;
+    for (let n = 0; n <= maxNum + 5; n++) {
+      if (!seenSections.has(String(n))) {
+        seenSections.add(String(n));
+        queue.push({
+          name: `Sección ${n}`,
+          url: new URL(`/course/view.php?id=${courseId}&section=${n}`, BASE_URL).href,
+        });
+      }
+    }
+  }
+
+  if (queue.length) {
+    // Crawl por anchura de TODAS las secciones/pestañas del curso.
+    console.log('    [i] Curso con pestañas — recorriendo secciones...');
+    while (queue.length) {
+      const tab = queue.shift();
+      if (!tab) break;
+      const tabResponse = await session.get(tab.url);
+      const $tab = cheerio.load(await tabResponse.text());
+      const region = $tab('#region-main').length ? $tab('#region-main') : $tab('html');
+
+      // Si el nombre es generico (viene del probeo), buscamos el nombre real.
+      let tabName = tab.name;
+      if (tabName.startsWith('Sección ')) {
+        const match = tab.url.match(/[?&]section=(\d+)/);
+        const real = match ? sectionNameFrom($tab, match[1]) : '';
+        if (real) tabName = real;
+      }
+
+      const before = ctx.markdown.length;
+      ctx.markdown.push(`\n## ${tabName}\n`);
+      await processActivities(ctx, $tab, region);
+      if (ctx.markdown.length === before + 1) ctx.markdown.pop(); // seccion vacia
+
+      // Descubrir subsecciones enlazadas dentro de esta seccion.
+      collectSections($tab, region, url, queue, seenSections);
+    }
+  } else {
+    // Curso clasico por secciones. Probamos selectores en orden y usamos el
+    // primero que devuelva resultados, para no contar contenedores anidados.
+    let sectionNodes = $('li.section');
+    if (!sectionNodes.length) sectionNodes = $('.course-section');
+    if (!sectionNodes.length) sectionNodes = $("[data-for='section']");
+    const containers = sectionNodes.length
+      ? sectionNodes.toArray().map((element) => $(element))
+      : [$('html')];
+
+    for (const section of containers) {
+      const sectionTitleElement = section
+        .find('.sectionname, h3.sectionname, .section-title')
+        .first();
+      const sectionTitle = sectionTitleElement.length ? cleanText(sectionTitleElement.text()) : '';
+      const before = ctx.markdown.length;
+      if (sectionTitle) ctx.markdown.push(`\n## ${sectionTitle}\n`);
+      await processActivities(ctx, $, section);
+      if (sectionTitle && ctx.markdown.length === before + 1) ctx.markdown.pop();
+    }
+  }
+
+  const mdPath = join(courseDir, `${courseName}.md`);
+  await writeFile(mdPath, ctx.markdown.join('\n'), 'utf-8');
+  console.log(`[OK] Markdown guardado: ${mdPath}`);
+
+  if (ctx.unhandled.size) {
+    console.log(
+      '    [AVISO] Tipos de recurso sin handler dedicado en esta materia (revisar si esconden material):',
+    );
+    for (const [type, example] of ctx.unhandled) {
+      console.log(`            - mod/${type}  (ej: "${example}")`);
     }
   }
 }

@@ -1,7 +1,7 @@
 import { BASE_URL } from './config.js';
 import type { Session } from './session.js';
 
-export interface DiscoveredCourse {
+interface DiscoveredCourse {
   id: number;
   name: string;
 }
