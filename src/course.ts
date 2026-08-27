@@ -84,15 +84,22 @@ async function processActivities(
     const name = cleanText(anchor.text()) || href;
     const type = moduleType(href);
 
+    // Fechas de apertura/cierre que Moodle muestra inline en cada actividad
+    // (tareas, cuestionarios). Clave para no perder deadlines.
+    const activityDates = cleanText(
+      activity.find('[data-region="activity-dates"], .activity-dates').text(),
+    );
+    const datesSuffix = activityDates ? `  _(${activityDates})_` : '';
+
     if (type === 'resource' || FILE_HINT_EXT.some((ext) => href.toLowerCase().endsWith(ext))) {
       const path = await downloadFile(ctx.session, href, ctx.filesDir, sanitize(name));
       if (path) {
-        ctx.markdown.push(`- [${name}](${relativeToCourse(ctx.courseDir, path)})`);
+        ctx.markdown.push(`- [${name}](${relativeToCourse(ctx.courseDir, path)})${datesSuffix}`);
       } else {
-        ctx.markdown.push(`- ${name} (${href})`);
+        ctx.markdown.push(`- ${name} (${href})${datesSuffix}`);
       }
     } else if (type === 'folder') {
-      ctx.markdown.push(`- **${name}**`);
+      ctx.markdown.push(`- **${name}**${datesSuffix}`);
       for (const path of await handleFolder(ctx.session, href, ctx.filesDir)) {
         ctx.markdown.push(`    - [${basename(path)}](${relativeToCourse(ctx.courseDir, path)})`);
       }
@@ -111,15 +118,15 @@ async function processActivities(
       ctx.markdown.push((await handleBook(ctx.session, href)) || '_(vacio)_');
     } else if (type === 'url') {
       const target = await handleUrl(ctx.session, href);
-      ctx.markdown.push(`- [${name}](${target})`);
+      ctx.markdown.push(`- [${name}](${target})${datesSuffix}`);
     } else if (type === 'assign' || type === 'quiz' || type === 'workshop') {
-      ctx.markdown.push(`- [${name}](${href})  _(actividad: ${type})_`);
+      ctx.markdown.push(`- [${name}](${href})  _(actividad: ${type})_${datesSuffix}`);
     } else {
       // Tipo sin handler dedicado. En vez de dejarlo como un link mudo, lo
       // escaneamos por videos/embeds y registramos el tipo para avisarlo al
       // final, asi nada escondido pasa desapercibido.
       ctx.unhandled.set(type ?? '?', name);
-      ctx.markdown.push(`- [${name}](${href})  _(tipo sin handler: ${type})_`);
+      ctx.markdown.push(`- [${name}](${href})  _(tipo sin handler: ${type})_${datesSuffix}`);
       try {
         const response = await ctx.session.get(href);
         const $page = cheerio.load(await response.text());
